@@ -5,10 +5,10 @@ from decimal import Decimal
 import sqlite3
 
 
-def gas(filename, state_meta_id, statistic_meta_id: int):
+def gas(filename, state_metadata_id, statistic_metadata_id: int):
     DATE_KEY = "DATA LETTURA"
     DATE_FORMAT = "%Y-%m-%d"
-    state, sum = get_latest_state_and_sum(metadata_id=statistic_meta_id)
+    state, sum = get_latest_state_and_sum(metadata_id=statistic_metadata_id)
 
     with open(filename, "r") as f:
         lines = list(csv.DictReader(f, delimiter=";"))
@@ -27,16 +27,16 @@ def gas(filename, state_meta_id, statistic_meta_id: int):
             try:
                 to_date = datetime.strptime(lines[i + 1][DATE_KEY], DATE_FORMAT)
             except IndexError:
-                to_date = None
+                to_date = datetime.now()
 
             run_sql(
                 state=lettura,
                 sum=sum,
-                metadata_id=statistic_meta_id,
+                statistic_metadata_id=statistic_metadata_id,
+                state_metadata_id=state_metadata_id,
                 from_date=from_date,
                 to_date=to_date,
             )
-        update_state(state_meta_id, state)
 
 
 def luce_giornaliera(
@@ -70,41 +70,64 @@ def luce_giornaliera(
                 try:
                     to_date = datetime.strptime(lines[i + 1][DATE_KEY], DATE_FORMAT)
                 except IndexError:
-                    to_date = None
+                    to_date = datetime.now()
                 run_sql(
                     state=lettura,
                     sum=sum,
-                    metadata_id=statistic_metadata_id,
+                    statistic_metadata_id=statistic_metadata_id,
+                    state_metadata_id=state_metadata_id,
                     from_date=from_date,
                     to_date=to_date,
                 )
-            update_state(state_metadata_id, state)
 
 
-def update_state(state_meta_id: int, state: Decimal):
+def update_state(
+    state_metadata_id: int,
+    state: Decimal,
+    from_date: datetime,
+    to_date: datetime = datetime.now(),
+):
     cur.execute(
-        "UPDATE states SET state={} WHERE metadata_id={} ORDER BY state_id DESC LIMIT 1;".format(
-            state, state_meta_id
+        """
+        UPDATE states 
+        SET state = {} 
+        WHERE 
+            last_changed_ts IS NULL AND 
+            states.metadata_id = {} AND 
+            last_reported_ts IS NULL AND
+            last_updated_ts>={} AND 
+            last_updated_ts<{};
+        """.format(
+            state, state_metadata_id, from_date.timestamp(), to_date.timestamp()
         )
     )
 
 
-def run_sql(state, sum, metadata_id, from_date, to_date=None):
+def run_sql(
+    state: Decimal,
+    sum: Decimal,
+    statistic_metadata_id: int,
+    state_metadata_id: int,
+    from_date: datetime,
+    to_date: datetime = datetime.now(),
+):
     for table in ["statistics", "statistics_short_term"]:
-        to_clause = (
-            " AND start_ts<{}".format(int(to_date.timestamp())) if to_date else ""
-        )
         cur.execute(
-            # print(
-            "UPDATE {} SET state={}, sum={} WHERE metadata_id={} AND start_ts>={}{};".format(
+            "UPDATE {} SET state={}, sum={} WHERE metadata_id={} AND start_ts>={} AND start_ts<{};".format(
                 table,
                 state,
                 sum,
-                metadata_id,
-                int(from_date.timestamp()),
-                to_clause,
+                statistic_metadata_id,
+                from_date.timestamp(),
+                to_date.timestamp(),
             )
         )
+    update_state(
+        state_metadata_id=state_metadata_id,
+        state=state,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
 
 def get_latest_state_and_sum(
@@ -119,44 +142,10 @@ def get_latest_state_and_sum(
     return Decimal(str(state)), Decimal(str(sum))
 
 
-def luce_mensile(filename: str, metadata_ids: list[int]):
-    states = []
-    sums = []
-    for metadata_id in [11, 12, 13]:
-        state, sum = get_latest_state_and_sum(metadata_id=metadata_id)
-        states.append(Decimal(state))
-        sums.append(Decimal(sum))
-
-    LETTURE = {
-        "F1": [],
-        "F2": [],
-        "F3": [],
-    }
-    with open(filename, "r") as f:
-        csv_file = list(csv.reader(f, delimiter=";"))
-        date_letture = [
-            datetime.strptime(date, "%d/%m/%Y ") for date in csv_file[2][1:]
-        ]
-        for fascia, i in zip(LETTURE.keys(), [4, 5, 6]):
-            for j in range(len(date_letture)):
-                LETTURE[fascia].append(
-                    (
-                        date_letture[j],
-                        Decimal(csv_file[i][j + 1].strip().replace(",", ".")),
-                    )
-                )
-
-    for fascia, metadata_id, state, sum in zip(
-        LETTURE.keys(), metadata_ids, states, sums
-    ):
-        process_letture(
-            letture=LETTURE[fascia], metadata_id=metadata_id, state=state, sum=sum
-        )
-
-
 def process_letture(
     letture: list[tuple[datetime, Decimal]],
-    metadata_id: int,
+    statistic_metadata_id: int,
+    state_metadata_id: int,
     state: Decimal = Decimal(0),
     sum: Decimal = Decimal(0),
 ):
@@ -169,11 +158,12 @@ def process_letture(
         try:
             to_date = letture[i + 1][0]
         except IndexError:
-            to_date = None
+            to_date = datetime.now()
         run_sql(
             state=state,
             sum=sum,
-            metadata_id=metadata_id,
+            statistic_metadata_id=statistic_metadata_id,
+            state_metadata_id=state_metadata_id,
             from_date=from_date,
             to_date=to_date,
         )
@@ -196,7 +186,7 @@ if __name__ == "__main__":
         headers = f.readline()
         if headers.startswith("PDR"):
             print(f"Importing GAS statistics from '{args.csv}'")
-            gas(args.csv, state_meta_id=259, statistic_meta_id=18)
+            gas(args.csv, state_metadata_id=259, statistic_metadata_id=18)
         elif headers.startswith("pod"):
             print(f"Importing ENERGY statistics from '{args.csv}'")
             luce_giornaliera(
