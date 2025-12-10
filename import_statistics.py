@@ -8,26 +8,10 @@ import sqlite3
 class Lettura:
     def __init__(self, data_lettura: datetime) -> None:
         self.data_lettura: datetime = data_lettura
-        self.letture = None
 
     def __lt__(self, value) -> bool:
         if isinstance(value, Lettura):
             return self.data_lettura < value.data_lettura
-        return NotImplemented
-
-    def __le__(self, value) -> bool:
-        if isinstance(value, Lettura):
-            return self.data_lettura <= value.data_lettura
-        return NotImplemented
-
-    def __gt__(self, value) -> bool:
-        if isinstance(value, Lettura):
-            return self.data_lettura > value.data_lettura
-        return NotImplemented
-
-    def __ge__(self, value) -> bool:
-        if isinstance(value, Lettura):
-            return self.data_lettura >= value.data_lettura
         return NotImplemented
 
     def __eq__(self, value: object) -> bool:
@@ -46,35 +30,52 @@ class LetturaGas(Lettura):
     def __repr__(self) -> str:
         return f"{self.data_lettura} - {self.lettura} m³"
 
+    def __str__(self) -> str:
+        return f"Lettura Gas {self.__repr__()}"
+
 
 class LetturaLuce(Lettura):
+    FASCE = 6
+
     def __init__(
         self,
         data_lettura: str,
-        lettura_f1: str,
-        lettura_f2: str,
-        lettura_f3: str,
         **kwargs,
     ) -> None:
         super().__init__(datetime.strptime(data_lettura, "%d/%m/%Y"))
-        self.lettura_f1 = Decimal(lettura_f1)
-        self.lettura_f2 = Decimal(lettura_f2)
-        self.lettura_f3 = Decimal(lettura_f3)
-        self.default = 0
+        for i in range(1, self.FASCE + 1):
+            setattr(self, f"lettura_f{i}", Decimal(kwargs[f"lettura_f{i}"]))
+        self.fascia = 0  # fascia 'lettura' property should return by default
 
     def __repr__(self) -> str:
-        return f"{self.data_lettura} - F1 {self.lettura_f1} kWh, F2 {self.lettura_f2} kWh, F3 {self.lettura_f3} kWh"
+        return "{} - {}".format(
+            self.data_lettura,
+            ", ".join(
+                [
+                    f"F{i} {self._lettura(i)} kWh"
+                    for i in range(1, self.FASCE + 1)
+                    if self._lettura(i) != 0
+                ]
+            ),
+        )
+
+    def __str__(self) -> str:
+        return f"Lettura Luce F{self.fascia} {self.data_lettura} - {self.lettura} kWh"
+
+    def _lettura(self, fascia) -> Decimal:
+        return getattr(self, f"lettura_f{fascia}")
 
     @property
     def lettura(self) -> Decimal:
-        return getattr(self, f"lettura_f{self.default}")
+        return self._lettura(self.fascia)
 
 
-def process_lines(
+def import_letture(
     letture: list[LetturaGas] | list[LetturaLuce], sensor_name: str
 ) -> None:
     state_metadata_id, statistics_metadata_id = get_metadata(id=f"sensor.{sensor_name}")
     state = get_state(state_metadata_id=state_metadata_id)
+    print(f"Importing statistics to sensor '{sensor_name}' (current state: {state}).")
     letture.sort()
     for i in range(len(letture)):
         if letture[i].lettura > state:
@@ -92,6 +93,7 @@ def process_lines(
             }
             update_states(**data)
             update_statistics(**data)
+            print(f"Imported {letture[i]}.")
 
 
 def get_metadata(id: str) -> tuple[int, int]:
@@ -100,32 +102,6 @@ def get_metadata(id: str) -> tuple[int, int]:
     res = cur.execute("SELECT id FROM statistics_meta WHERE statistic_id = ?", (id,))
     (statistics_metadata_id,) = res.fetchone()
     return state_metadata_id, statistics_metadata_id
-
-
-def gas(filename: str, sensor: str) -> None:
-    with open(filename, "r") as f:
-        letture = []
-        for line in csv.DictReader(f, delimiter=";"):
-            try:
-                letture.append(LetturaGas(**line))
-            except:
-                continue
-        process_lines(
-            letture=letture,
-            sensor_name=sensor,
-        )
-
-
-def luce_giornaliera(filename: str, sensors: list[str]) -> None:
-    with open(filename, "r") as f:
-        letture = [LetturaLuce(**line) for line in csv.DictReader(f, delimiter=";")]
-        for fascia, sensor in zip(FASCE, sensors):
-            for lettura in letture:
-                lettura.default = fascia
-            process_lines(
-                letture=letture,
-                sensor_name=sensor,
-            )
 
 
 def update_states(**kwargs) -> None:
@@ -168,6 +144,37 @@ def get_state(state_metadata_id: int) -> Decimal:
     return Decimal(state)
 
 
+def main(filename: str):
+    letture = []
+    with open(filename, "r") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        assert reader.fieldnames
+        print(f"Reading file: '{filename}'.")
+        if "PDR" in reader.fieldnames:
+            for row in reader:
+                try:
+                    letture.append(LetturaGas(**row))
+                except Exception as e:
+                    print("Lettura parsing error: ", e)
+            import_letture(
+                letture=letture,
+                sensor_name="lettura_gas",
+            )
+        elif "pod" in reader.fieldnames:
+            for row in reader:
+                letture.append(LetturaLuce(**row))
+            for i in [1, 2, 3]:
+                for lettura in letture:
+                    lettura.fascia = i
+                import_letture(
+                    letture=letture,
+                    sensor_name=f"lettura_luce_f{i}",
+                )
+        else:
+            exit(f"{filename} not recognized, exit.")
+        print("Done.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", help="CSV file")
@@ -177,23 +184,8 @@ if __name__ == "__main__":
         default="/home/pi/homeassistant/config/home-assistant_v2.db",
     )
     args = parser.parse_args()
-
     con = sqlite3.connect(args.db)
     cur = con.cursor()
-
-    with open(args.csv, "r") as f:
-        headers = f.readline()
-        if headers.startswith("PDR"):
-            print(f"Importing GAS statistics from '{args.csv}'")
-            gas(filename=args.csv, sensor="lettura_gas")
-        elif headers.startswith("pod"):
-            print(f"Importing ENERGY statistics from '{args.csv}'")
-            FASCE = [1, 2, 3]
-            luce_giornaliera(
-                filename=args.csv, sensors=[f"lettura_luce_f{i}" for i in FASCE]
-            )
-        else:
-            print(f"{args.csv} not recognized, exit.")
-
+    main(filename=args.csv)
     con.commit()
     con.close()
