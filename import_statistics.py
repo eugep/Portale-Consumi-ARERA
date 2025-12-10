@@ -6,8 +6,9 @@ import sqlite3
 
 
 class Lettura:
-    def __init__(self, data_lettura: datetime) -> None:
-        self.data_lettura: datetime = data_lettura
+    def __init__(self, data_lettura: datetime, lettura: Decimal) -> None:
+        self.data_lettura = data_lettura
+        self.lettura = lettura
 
     def __lt__(self, value) -> bool:
         if isinstance(value, Lettura):
@@ -24,8 +25,8 @@ class LetturaGas(Lettura):
     def __init__(self, LETTURA, **kwargs) -> None:
         super().__init__(
             datetime.strptime(kwargs["DATA LETTURA"], "%Y-%m-%d"),
+            lettura=Decimal(LETTURA.lstrip("0")),
         )
-        self.lettura = Decimal(LETTURA.lstrip("0"))
 
     def __repr__(self) -> str:
         return f"{self.data_lettura} - {self.lettura} m³"
@@ -37,15 +38,14 @@ class LetturaGas(Lettura):
 class LetturaLuce(Lettura):
     FASCE = 6
 
-    def __init__(
-        self,
-        data_lettura: str,
-        **kwargs,
-    ) -> None:
-        super().__init__(datetime.strptime(data_lettura, "%d/%m/%Y"))
+    def __init__(self, data_lettura: str, **kwargs) -> None:
+        super().__init__(
+            datetime.strptime(data_lettura, "%d/%m/%Y"),
+            Decimal(),
+        )
         for i in range(1, self.FASCE + 1):
             setattr(self, f"lettura_f{i}", Decimal(kwargs[f"lettura_f{i}"]))
-        self.fascia = 0  # fascia 'lettura' property should return by default
+        self.fascia = 0  # the 'fascia' that 'lettura' property returns
 
     def __repr__(self) -> str:
         return "{} - {}".format(
@@ -70,33 +70,32 @@ class LetturaLuce(Lettura):
         return self._lettura(self.fascia)
 
 
-def import_letture(
-    letture: list[LetturaGas] | list[LetturaLuce], sensor_name: str
-) -> None:
-    state_metadata_id, statistics_metadata_id = get_metadata(id=f"sensor.{sensor_name}")
+def import_letture(letture: list[Lettura], sensor_name: str) -> None:
+    state_metadata_id, statistics_metadata_id = get_metadata_ids(
+        id=f"sensor.{sensor_name}"
+    )
     state = get_state(state_metadata_id=state_metadata_id)
     print(f"Importing statistics to sensor '{sensor_name}' (current state: {state}).")
     letture.sort()
     for i in range(len(letture)):
         if letture[i].lettura > state:
             try:
-                to_date = letture[i + 1].data_lettura
+                max_date = letture[i + 1].data_lettura
             except IndexError:
-                to_date = datetime.now()
-
+                max_date = datetime.now()
             data = {
                 "state": float(letture[i].lettura),
                 "state_metadata_id": state_metadata_id,
                 "statistics_metadata_id": statistics_metadata_id,
-                "from_ts": letture[i].data_lettura.timestamp(),
-                "to_ts": to_date.timestamp(),
+                "min_ts": letture[i].data_lettura.timestamp(),
+                "max_ts": max_date.timestamp(),
             }
             update_states(**data)
             update_statistics(**data)
             print(f"Imported {letture[i]}.")
 
 
-def get_metadata(id: str) -> tuple[int, int]:
+def get_metadata_ids(id: str) -> tuple[int, int]:
     res = cur.execute("SELECT metadata_id FROM states_meta WHERE entity_id = ?", (id,))
     (state_metadata_id,) = res.fetchone()
     res = cur.execute("SELECT id FROM statistics_meta WHERE statistic_id = ?", (id,))
@@ -104,17 +103,26 @@ def get_metadata(id: str) -> tuple[int, int]:
     return state_metadata_id, statistics_metadata_id
 
 
+def get_state(state_metadata_id: int) -> Decimal:
+    res = cur.execute(
+        "SELECT state FROM states WHERE metadata_id = ? ORDER BY state_id DESC LIMIT 1;",
+        (state_metadata_id,),
+    )
+    (state,) = res.fetchone()
+    return Decimal(state)
+
+
 def update_states(**kwargs) -> None:
     cur.execute(
         """
-        UPDATE states 
-        SET state = :state 
-        WHERE 
-            last_changed_ts IS NULL AND 
-            states.metadata_id = :state_metadata_id AND 
+        UPDATE states
+        SET state = :state
+        WHERE
+            last_changed_ts IS NULL AND
+            states.metadata_id = :state_metadata_id AND
             last_reported_ts IS NULL AND
-            last_updated_ts >= :from_ts AND 
-            last_updated_ts < :to_ts ;
+            last_updated_ts >= :min_ts AND
+            last_updated_ts < :max_ts;
         """,
         kwargs,
     )
@@ -126,22 +134,13 @@ def update_statistics(**kwargs) -> None:
             f"""
             UPDATE {table}
             SET state = :state, sum = ROUND(sum + state - :state, 2)
-            WHERE 
+            WHERE
                 metadata_id = :statistics_metadata_id AND
-                start_ts >= :from_ts AND 
-                start_ts < :to_ts ;
+                start_ts >= :min_ts AND
+                start_ts < :max_ts;
             """,
             kwargs,
         )
-
-
-def get_state(state_metadata_id: int) -> Decimal:
-    res = cur.execute(
-        "SELECT state FROM states WHERE metadata_id = ? ORDER BY state_id DESC LIMIT 1;",
-        (state_metadata_id,),
-    )
-    (state,) = res.fetchone()
-    return Decimal(state)
 
 
 def main(filename: str):
@@ -178,11 +177,7 @@ def main(filename: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", help="CSV file")
-    parser.add_argument(
-        "--db",
-        help="DB file",
-        default="/home/pi/homeassistant/config/home-assistant_v2.db",
-    )
+    parser.add_argument("--db", help="DB file", default="home-assistant_v2.db")
     args = parser.parse_args()
     con = sqlite3.connect(args.db)
     cur = con.cursor()
