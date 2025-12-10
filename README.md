@@ -4,8 +4,6 @@ Import csv file downloaded from the ARERA [Portale Consumi](https://www.consumie
 
 The provided script read a csv file containing the gas or energy measurements and import the data as [long- and short-term statistics](https://data.home-assistant.io/docs/statistics) into [Home Assistant Database](https://www.home-assistant.io/docs/backend/database/).
 
-![gas-graph](https://www.home-assistant.io/images/dashboards/energy/gas-graph.png)
-
 ## Download csv measurements file
 
 1. Login to [Portale Consumi](https://www.consumienergia.it/) with your Identity Provider.
@@ -31,3 +29,9 @@ For instance:
 ./import_statistics.py <csv_filepath> --db <db_filepath>
 ```
 3. `Restart` your Home Assistant instance.
+
+Open your Home Assistant Energy Dashboard and you should see the updated charts with the new data imported.
+
+![Energy usage graph](https://www.home-assistant.io/images/dashboards/energy/usage-graph.png)
+
+![Gas consumption graph](https://www.home-assistant.io/images/dashboards/energy/gas-graph.png)

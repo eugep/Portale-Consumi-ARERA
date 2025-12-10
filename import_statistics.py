@@ -8,9 +8,12 @@ import sqlite3
 
 
 class Lettura:
-    def __init__(self, data_lettura: datetime, lettura: Decimal) -> None:
+    def __init__(self, data_lettura: datetime) -> None:
         self.data_lettura = data_lettura
-        self.lettura = lettura
+
+    @property
+    def lettura(self) -> Decimal:
+        return NotImplemented
 
     def __lt__(self, value) -> bool:
         if isinstance(value, Lettura):
@@ -25,10 +28,12 @@ class Lettura:
 
 class LetturaGas(Lettura):
     def __init__(self, LETTURA, **kwargs) -> None:
-        super().__init__(
-            datetime.strptime(kwargs["DATA LETTURA"], "%Y-%m-%d"),
-            lettura=Decimal(LETTURA.lstrip("0")),
-        )
+        super().__init__(datetime.strptime(kwargs["DATA LETTURA"], "%Y-%m-%d"))
+        self._lettura = Decimal(LETTURA.lstrip("0"))
+
+    @property
+    def lettura(self):
+        return self._lettura
 
     def __repr__(self) -> str:
         return f"{self.data_lettura} - {self.lettura} m³"
@@ -41,10 +46,7 @@ class LetturaLuce(Lettura):
     FASCE = 6
 
     def __init__(self, data_lettura: str, **kwargs) -> None:
-        super().__init__(
-            datetime.strptime(data_lettura, "%d/%m/%Y"),
-            Decimal(),
-        )
+        super().__init__(datetime.strptime(data_lettura, "%d/%m/%Y"))
         for i in range(1, self.FASCE + 1):
             setattr(self, f"lettura_f{i}", Decimal(kwargs[f"lettura_f{i}"]))
         self.fascia = 0  # the 'fascia' that 'lettura' property returns
@@ -146,34 +148,37 @@ def update_statistics(**kwargs) -> None:
 
 
 def main(filename: str):
-    letture = []
     with open(filename, "r") as f:
         reader = csv.DictReader(f, delimiter=";")
         assert reader.fieldnames
         print(f"Reading file: '{filename}'.")
+        letture = []
         if "PDR" in reader.fieldnames:
-            for row in reader:
-                try:
-                    letture.append(LetturaGas(**row))
-                except Exception as e:
-                    print("Lettura parsing error: ", e)
-            import_letture(
-                letture=letture,
-                sensor_name="lettura_gas",
-            )
+            L = LetturaGas
         elif "pod" in reader.fieldnames:
-            for row in reader:
-                letture.append(LetturaLuce(**row))
-            for i in [1, 2, 3]:
-                for lettura in letture:
-                    lettura.fascia = i
-                import_letture(
-                    letture=letture,
-                    sensor_name=f"lettura_luce_f{i}",
-                )
+            L = LetturaLuce
         else:
             exit(f"{filename} not recognized, exit.")
-        print("Done.")
+        for row in reader:
+            try:
+                letture.append(L(**row))
+            except Exception as e:
+                print("Lettura parsing error: ", e)
+
+    if L == LetturaGas:
+        import_letture(
+            letture=letture,
+            sensor_name="lettura_gas",
+        )
+    elif L == LetturaLuce:
+        for i in [1, 2, 3]:
+            for lettura in letture:
+                lettura.fascia = i
+            import_letture(
+                letture=letture,
+                sensor_name=f"lettura_luce_f{i}",
+            )
+    print("Done.")
 
 
 if __name__ == "__main__":
