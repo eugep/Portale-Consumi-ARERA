@@ -118,7 +118,7 @@ def update_states(**kwargs) -> None:
         UPDATE states
         SET state = :state
         WHERE
-            state < :state AND
+            lt(state, :state) AND
             states.metadata_id = :state_metadata_id AND
             last_updated_ts >= :min_ts;
         """,
@@ -175,12 +175,20 @@ def main(filename: str):
     print("Done.")
 
 
+def lt(arg1, arg2) -> bool:
+    try:
+        return float(arg1) < float(arg2)
+    except ValueError:
+        return False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", help="CSV file")
     parser.add_argument("--db", help="DB file", default="home-assistant_v2.db")
     args = parser.parse_args()
     con = sqlite3.connect(args.db)
+    con.create_function("lt", 2, lt)
     cur = con.cursor()
     main(filename=args.csv)
     con.commit()
