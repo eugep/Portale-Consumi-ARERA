@@ -1,5 +1,5 @@
 from decimal import Decimal
-from enum import IntEnum, StrEnum
+from enum import IntEnum
 
 from lxml import etree
 import requests
@@ -62,22 +62,26 @@ class PUN(Indice):
         )
 
 
-class A2A:
+class A2A_scraper:
     def __init__(self) -> None:
         self.session = requests.Session()
+        self._pun = list(self._parse_pun())
+        self._psv = list(self._parse_psv())
 
-    def parse_psv(self):
+    def _parse_psv(self):
         url = "https://www.a2a.it/assistenza/tutela-cliente/indici/indice-psv"
         response = self.session.get(url)
+        response.raise_for_status()
         tree = etree.HTML(response.content)
         for tr in tree.xpath(
             "/html/body/div/div[1]/main/div[2]/div/div[3]/div/div/div/div/table/tbody/tr"
         ):
             yield PSV(tr)
 
-    def parse_pun(self):
+    def _parse_pun(self):
         url = "https://www.a2a.it/assistenza/tutela-cliente/indici/indice-pun"
         response = self.session.get(url)
+        response.raise_for_status()
         tree = etree.HTML(response.text)
         for tr in tree.xpath(
             "/html/body/div/div[1]/main/div[2]/div/div[3]/div/div[5]/div/div/div[2]/div/div/div/table/tbody/tr"
@@ -85,17 +89,18 @@ class A2A:
             yield PUN(tr)
 
     def get_pun(self, mese: Mese, anno: int) -> PUN | None:
-        for pun in self.parse_pun():
+        for pun in self._pun:
             if pun.mese == mese and pun.anno == anno:
                 return pun
 
     def get_psv(self, mese: Mese, anno: int) -> PSV | None:
-        for psv in self.parse_psv():
+        for psv in self._psv:
             if psv.mese == mese and psv.anno == anno:
                 return psv
 
 
+A2A = A2A_scraper()
+
 if __name__ == "__main__":
-    a2a = A2A()
-    a2a.get_psv(mese=Mese.Ottobre, anno=2025)
-    a2a.get_pun(mese=Mese.Ottobre, anno=2025)
+    A2A.get_psv(mese=Mese.Ottobre, anno=2025)
+    A2A.get_pun(mese=Mese.Ottobre, anno=2025)
