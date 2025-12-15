@@ -119,7 +119,7 @@ def update_states(**kwargs) -> None:
         SET state = :state
         WHERE
             lt(state, :state) AND
-            states.metadata_id = :state_metadata_id AND
+            metadata_id = :state_metadata_id AND
             last_updated_ts >= :min_ts;
         """,
         kwargs,
